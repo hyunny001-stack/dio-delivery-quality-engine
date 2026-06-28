@@ -1,0 +1,18 @@
+{
+  "analysis_window_days": 40,
+  "carriers": {
+    "epost": { "label": "우체국", "cutoff": "15:00" },
+    "cj_logistics": { "label": "CJ대한통운", "cutoff": "17:00" }
+  },
+  "exclude": {
+    "friday_shipments": true,
+    "holiday_eve_shipments": true,
+    "island_mountain": true,
+    "missing_delivery_time_from_quality_rate": true
+  },
+  "holidays": ["2026-05-25", "2026-06-03", "2026-06-06"],
+  "quality_error_rules": {
+    "non_next_day": true,
+    "cutoff_fail_on_next_day": true
+  }
+}

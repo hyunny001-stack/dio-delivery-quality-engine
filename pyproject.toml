@@ -1,0 +1,12 @@
+[project]
+name = "dio-delivery-quality-engine"
+version = "0.1.0"
+description = "DIO domestic delivery quality analysis engine"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+dio-delivery-quality = "dio_delivery_quality_engine.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
