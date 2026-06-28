@@ -36,7 +36,30 @@ python3 -m dio_delivery_quality_engine.cli fetch-erp \
   --out /tmp/domestic_erp_2026_06.json
 ```
 
-그 다음 분석 기준 파일을 적용합니다.
+그 다음 SQLite 누적 DB에 저장합니다. 이미 저장된 송장은 덮어쓰기(upsert)되어 중복 누적되지 않습니다.
+
+```bash
+python3 -m dio_delivery_quality_engine.cli init-db --db /tmp/dio_delivery_quality.db
+
+python3 -m dio_delivery_quality_engine.cli ingest \
+  --db /tmp/dio_delivery_quality.db \
+  --erp-json /tmp/domestic_erp_2026_06.json \
+  --cache /tmp/domestic_tracking_cache.jsonl
+```
+
+누적 DB에서 원하는 기간을 다시 분석합니다.
+
+```bash
+python3 -m dio_delivery_quality_engine.cli analyze-db \
+  --db /tmp/dio_delivery_quality.db \
+  --start 2026-06-01 \
+  --end 2026-06-30 \
+  --config examples/analysis_rules_40d.json \
+  --out /tmp/domestic_quality_result.json \
+  --save-run
+```
+
+파일만으로 1회성 분석할 수도 있습니다.
 
 ```bash
 python3 -m dio_delivery_quality_engine.cli analyze \
