@@ -2,7 +2,7 @@
 
 국내배송트레킹의 ERP/택배 조회 결과 파일을 입력받아 배송 품질을 빠르게 산출하는 분석 전용 엔진입니다.
 
-데이터 수집은 의도적으로 자동화하지 않습니다. 월 단위, 주 단위, 특정일, 특정 기간 등 분석 목적에 따라 사용자가 준비한 원천 파일을 넣고, 이 엔진은 동일한 기준으로 빠르게 재계산하는 역할만 담당합니다.
+월 단위, 주 단위, 특정일, 특정 기간 등 분석 목적에 맞게 ERP 원천 데이터를 기간 지정으로 추출하고, 동일한 기준으로 빠르게 재계산하는 역할을 담당합니다. 단, 택배사 배송조회까지 무조건 자동으로 돌리지는 않고, 이미 조회된 캐시가 있으면 재사용하는 구조입니다.
 
 ## 설계 방향
 
@@ -24,11 +24,23 @@
 
 ## 사용 예시
 
-ERP 40일 원천 JSON이 있을 때:
+ERP에서 특정 기간 원천 JSON을 먼저 뽑을 수 있습니다. 이 단계만 ERP 환경변수가 필요합니다.
+
+```bash
+export ERP_API_URL="https://..."
+export ERP_API_KEY="..."
+
+python3 -m dio_delivery_quality_engine.cli fetch-erp \
+  --start 2026-06-01 \
+  --end 2026-06-30 \
+  --out /tmp/domestic_erp_2026_06.json
+```
+
+그 다음 분석 기준 파일을 적용합니다.
 
 ```bash
 python3 -m dio_delivery_quality_engine.cli analyze \
-  --erp-json /tmp/domestic_erp_40d_raw.json \
+  --erp-json /tmp/domestic_erp_2026_06.json \
   --cache /tmp/domestic_tracking_cache.jsonl \
   --out /tmp/domestic_quality_result.json
 ```

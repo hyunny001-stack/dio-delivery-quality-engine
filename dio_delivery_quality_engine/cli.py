@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .analyzer import analyze_records
 from .config import load_config, write_default_config
+from .erp_source import write_erp_json
 from .io import fixture_tracking_response, load_erp_json, load_tracking_cache, append_cache_record, record_from_tracking_response
 
 
@@ -15,6 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init-config", help="기본 분석 기준 JSON 생성")
     init.add_argument("--out", required=True)
+
+    fetch = sub.add_parser("fetch-erp", help="ERP에서 기간별 원천 데이터 JSON 추출")
+    fetch.add_argument("--start", required=True, help="YYYY-MM-DD")
+    fetch.add_argument("--end", required=True, help="YYYY-MM-DD")
+    fetch.add_argument("--out", required=True)
+    fetch.add_argument("--endpoint", help="기본값: ERP_API_URL 환경변수")
 
     analyze = sub.add_parser("analyze", help="캐시/ERP 기반 배송품질 분석")
     analyze.add_argument("--erp-json", required=True)
@@ -27,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_init_config(args: argparse.Namespace) -> None:
     write_default_config(args.out)
+    print(args.out)
+
+
+def cmd_fetch_erp(args: argparse.Namespace) -> None:
+    write_erp_json(args.start, args.end, args.out, endpoint=args.endpoint)
     print(args.out)
 
 
@@ -66,6 +78,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "init-config":
         cmd_init_config(args)
+    elif args.command == "fetch-erp":
+        cmd_fetch_erp(args)
     elif args.command == "analyze":
         cmd_analyze(args)
 
