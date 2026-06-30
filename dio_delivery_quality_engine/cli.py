@@ -10,6 +10,13 @@ from .config import load_config, write_default_config
 from .erp_source import write_erp_json
 from .io import fixture_tracking_response, load_erp_json, load_tracking_cache, append_cache_record, record_from_tracking_response
 from .remote_area import lookup_juso_zip
+from .recommendation_mailer import (
+    generate_email_drafts,
+    load_sales_rep_email_csv,
+    recommendations_from_recent_rejudgement,
+    seed_sales_rep_emails,
+    upsert_monthly_recommendations,
+)
 from .store import (
     apply_zipcode_to_address,
     cache_address_zip,
@@ -92,6 +99,22 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_switch.add_argument("--threshold-hours", type=float, default=2.0)
     analyze_switch.add_argument("--name")
     analyze_switch.add_argument("--save-run", action="store_true")
+
+    seed_rep = sub.add_parser("seed-sales-rep-emails", help="담당자 이메일 CSV를 적재")
+    seed_rep.add_argument("--db", required=True)
+    seed_rep.add_argument("--csv", required=True)
+
+    import_recs = sub.add_parser("import-recommendations", help="CJ 예외 후보 재판정 JSON을 월간 추천 테이블에 적재")
+    import_recs.add_argument("--db", required=True)
+    import_recs.add_argument("--month", required=True, help="YYYY-MM")
+    import_recs.add_argument("--rejudgement-json", required=True)
+    import_recs.add_argument("--grades", default="A,B")
+
+    draft_mail = sub.add_parser("generate-email-drafts", help="월간 추천 결과를 담당자별 메일 초안으로 생성")
+    draft_mail.add_argument("--db", required=True)
+    draft_mail.add_argument("--month", required=True, help="YYYY-MM")
+    draft_mail.add_argument("--grades", default="A,B")
+    draft_mail.add_argument("--out-dir", required=True)
     return parser
 
 
@@ -216,6 +239,27 @@ def cmd_analyze_carrier_switch_db(args: argparse.Namespace) -> None:
     print(args.out)
 
 
+def _grades_csv(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def cmd_seed_sales_rep_emails(args: argparse.Namespace) -> None:
+    rows = load_sales_rep_email_csv(args.csv)
+    count = seed_sales_rep_emails(args.db, rows)
+    print(json.dumps({"salesRepEmailsUpserted": count}, ensure_ascii=False))
+
+
+def cmd_import_recommendations(args: argparse.Namespace) -> None:
+    recs = recommendations_from_recent_rejudgement(args.db, args.month, args.rejudgement_json, allowed_grades=_grades_csv(args.grades))
+    count = upsert_monthly_recommendations(args.db, args.month, recs)
+    print(json.dumps({"monthlyRecommendationsUpserted": count}, ensure_ascii=False))
+
+
+def cmd_generate_email_drafts(args: argparse.Namespace) -> None:
+    drafts = generate_email_drafts(args.db, args.month, allowed_grades=_grades_csv(args.grades), out_dir=args.out_dir)
+    print(json.dumps({"draftsGenerated": len(drafts), "outDir": args.out_dir, "missingEmail": sum(1 for d in drafts if not d.get("recipient_email"))}, ensure_ascii=False))
+
+
 def cmd_analyze(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     shipments = load_erp_json(args.erp_json)
@@ -270,6 +314,12 @@ def main() -> None:
         cmd_ingest_carrier_switch(args)
     elif args.command == "analyze-carrier-switch-db":
         cmd_analyze_carrier_switch_db(args)
+    elif args.command == "seed-sales-rep-emails":
+        cmd_seed_sales_rep_emails(args)
+    elif args.command == "import-recommendations":
+        cmd_import_recommendations(args)
+    elif args.command == "generate-email-drafts":
+        cmd_generate_email_drafts(args)
     elif args.command == "analyze":
         cmd_analyze(args)
 
