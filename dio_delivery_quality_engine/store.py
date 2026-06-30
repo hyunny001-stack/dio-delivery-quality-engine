@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import json
 import sqlite3
 from pathlib import Path
 from typing import Iterable
 
 from .core import Shipment, TrackingRecord, is_island_mountain
+from .carrier_switch import parse_delivered_at
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -71,6 +73,39 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
   start_date TEXT NOT NULL,
   end_date TEXT NOT NULL,
   config_json TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS carrier_switch_shipments (
+  tracking_no TEXT PRIMARY KEY,
+  carrier TEXT NOT NULL,
+  ship_date TEXT NOT NULL,
+  order_no TEXT,
+  customer_code TEXT,
+  customer_name TEXT,
+  rep_name TEXT,
+  dept_name TEXT,
+  api_success INTEGER NOT NULL DEFAULT 0,
+  api_status TEXT,
+  delivered_at TEXT,
+  delivered_date TEXT,
+  delivered_hhmm TEXT,
+  delivery_region TEXT,
+  error TEXT,
+  source TEXT,
+  raw_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_carrier_switch_carrier_ship_date ON carrier_switch_shipments(carrier, ship_date);
+CREATE INDEX IF NOT EXISTS idx_carrier_switch_customer ON carrier_switch_shipments(customer_code, customer_name);
+CREATE INDEX IF NOT EXISTS idx_carrier_switch_delivered_date ON carrier_switch_shipments(delivered_date);
+
+CREATE TABLE IF NOT EXISTS carrier_switch_analysis_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  parameters_json TEXT NOT NULL,
   result_json TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -242,6 +277,76 @@ def apply_zipcode_to_address(db_path: str, address: str, zipcode: str, source: s
         return int(cur.rowcount)
 
 
+def upsert_carrier_switch_tracking_rows(db_path: str, rows: Iterable[dict], *, source: str = "") -> int:
+    data = list(rows)
+    with connect(db_path) as con:
+        con.executescript(SCHEMA)
+        con.executemany(
+            """
+            INSERT INTO carrier_switch_shipments(
+              tracking_no, carrier, ship_date, order_no, customer_code, customer_name,
+              rep_name, dept_name, api_success, api_status, delivered_at, delivered_date,
+              delivered_hhmm, delivery_region, error, source, raw_json
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(tracking_no) DO UPDATE SET
+              carrier=excluded.carrier,
+              ship_date=excluded.ship_date,
+              order_no=excluded.order_no,
+              customer_code=excluded.customer_code,
+              customer_name=excluded.customer_name,
+              rep_name=excluded.rep_name,
+              dept_name=excluded.dept_name,
+              api_success=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.api_success ELSE carrier_switch_shipments.api_success END,
+              api_status=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.api_status ELSE carrier_switch_shipments.api_status END,
+              delivered_at=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.delivered_at ELSE carrier_switch_shipments.delivered_at END,
+              delivered_date=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.delivered_date ELSE carrier_switch_shipments.delivered_date END,
+              delivered_hhmm=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.delivered_hhmm ELSE carrier_switch_shipments.delivered_hhmm END,
+              delivery_region=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.delivery_region ELSE carrier_switch_shipments.delivery_region END,
+              error=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' THEN excluded.error ELSE carrier_switch_shipments.error END,
+              source=excluded.source,
+              raw_json=CASE WHEN excluded.raw_json LIKE '%"track"%' OR excluded.error <> '' OR carrier_switch_shipments.raw_json NOT LIKE '%"track"%' THEN excluded.raw_json ELSE carrier_switch_shipments.raw_json END,
+              updated_at=CURRENT_TIMESTAMP
+            """,
+            [_carrier_switch_tuple(row, source) for row in data],
+        )
+    return len(data)
+
+
+def _carrier_switch_tuple(row: dict, source: str) -> tuple:
+    status, delivered_at, delivered_date, delivered_hhmm = parse_delivered_at(row)
+    track = row.get("track") or {}
+    return (
+        str(row.get("trackingNo") or row.get("tracking_no") or ""),
+        str(row.get("carrier") or ""),
+        str(row.get("shipDate") or row.get("ship_date") or ""),
+        str(row.get("orderId") or row.get("order_no") or ""),
+        str(row.get("customerId") or row.get("customer_code") or ""),
+        str(row.get("customerName") or row.get("customer_name") or ""),
+        str(row.get("salesRepName") or row.get("rep_name") or ""),
+        str(row.get("hqName") or row.get("dept_name") or ""),
+        1 if row.get("ok") else 0,
+        status,
+        delivered_at,
+        delivered_date,
+        delivered_hhmm,
+        str(track.get("delivery_region") or row.get("delivery_region") or ""),
+        str(row.get("error") or ""),
+        source,
+        json.dumps(row, ensure_ascii=False),
+    )
+
+
+def carrier_switch_stats(db_path: str) -> dict[str, int]:
+    with connect(db_path) as con:
+        con.executescript(SCHEMA)
+        return {
+            "carrierSwitchShipments": con.execute("SELECT COUNT(*) FROM carrier_switch_shipments").fetchone()[0],
+            "carrierSwitchDelivered": con.execute("SELECT COUNT(*) FROM carrier_switch_shipments WHERE COALESCE(delivered_at,'') <> ''").fetchone()[0],
+            "carrierSwitchAnalysisRuns": con.execute("SELECT COUNT(*) FROM carrier_switch_analysis_runs").fetchone()[0],
+        }
+
+
 def records_for_period(db_path: str, start: str, end: str, *, keyword_fallback: bool = True) -> list[TrackingRecord]:
     with connect(db_path) as con:
         _apply_light_migrations(con)
@@ -306,4 +411,7 @@ def db_stats(db_path: str) -> dict[str, int]:
             "addressZipCache": con.execute("SELECT COUNT(*) FROM address_zip_cache").fetchone()[0],
             "shipmentsWithZipcode": con.execute("SELECT COUNT(*) FROM shipments WHERE COALESCE(zipcode,'') <> ''").fetchone()[0],
             "analysisRuns": con.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0],
+            "carrierSwitchShipments": con.execute("SELECT COUNT(*) FROM carrier_switch_shipments").fetchone()[0],
+            "carrierSwitchDelivered": con.execute("SELECT COUNT(*) FROM carrier_switch_shipments WHERE COALESCE(delivered_at,'') <> ''").fetchone()[0],
+            "carrierSwitchAnalysisRuns": con.execute("SELECT COUNT(*) FROM carrier_switch_analysis_runs").fetchone()[0],
         }

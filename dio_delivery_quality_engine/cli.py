@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .analyzer import analyze_records
+from .carrier_switch import analyze_carrier_switch, save_carrier_switch_analysis_run
 from .config import load_config, write_default_config
 from .erp_source import write_erp_json
 from .io import fixture_tracking_response, load_erp_json, load_tracking_cache, append_cache_record, record_from_tracking_response
@@ -12,6 +13,7 @@ from .remote_area import lookup_juso_zip
 from .store import (
     apply_zipcode_to_address,
     cache_address_zip,
+    carrier_switch_stats,
     db_stats,
     init_db,
     records_for_period,
@@ -19,6 +21,7 @@ from .store import (
     seed_remote_area_ranges,
     upsert_shipments,
     upsert_tracking_records,
+    upsert_carrier_switch_tracking_rows,
 )
 
 
@@ -71,6 +74,24 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_db.add_argument("--name")
     analyze_db.add_argument("--save-run", action="store_true")
     analyze_db.add_argument("--no-keyword-fallback", action="store_true", help="우편번호 마스터만으로 도서산간을 판정하고 주소 키워드 fallback은 끔")
+
+    ingest_switch = sub.add_parser("ingest-carrier-switch", help="CJ 과거 vs 우체국 전환후 비교용 tracking JSON/JSONL을 SQLite에 적재")
+    ingest_switch.add_argument("--db", required=True)
+    ingest_switch.add_argument("--tracking-json", required=True)
+    ingest_switch.add_argument("--source-name", default="")
+
+    analyze_switch = sub.add_parser("analyze-carrier-switch-db", help="SQLite에서 CJ 과거 vs 우체국 전환후 거래처별 비교 재분석")
+    analyze_switch.add_argument("--db", required=True)
+    analyze_switch.add_argument("--out", required=True)
+    analyze_switch.add_argument("--cj-start", default="2026-01-01")
+    analyze_switch.add_argument("--cj-end", default="2026-05-09")
+    analyze_switch.add_argument("--kp-start", default="2026-05-20")
+    analyze_switch.add_argument("--kp-end", default="2026-06-28")
+    analyze_switch.add_argument("--min-cj", type=int, default=2)
+    analyze_switch.add_argument("--min-kp", type=int, default=2)
+    analyze_switch.add_argument("--threshold-hours", type=float, default=2.0)
+    analyze_switch.add_argument("--name")
+    analyze_switch.add_argument("--save-run", action="store_true")
     return parser
 
 
@@ -159,6 +180,42 @@ def cmd_analyze_db(args: argparse.Namespace) -> None:
     print(args.out)
 
 
+def _load_json_or_jsonl(path: str) -> list[dict]:
+    p = Path(path)
+    if p.suffix == ".jsonl":
+        return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("shipments"), list):
+        return data["shipments"]
+    raise SystemExit(f"Unsupported carrier-switch JSON shape: {path}")
+
+
+def cmd_ingest_carrier_switch(args: argparse.Namespace) -> None:
+    init_db(args.db)
+    rows = _load_json_or_jsonl(args.tracking_json)
+    count = upsert_carrier_switch_tracking_rows(args.db, rows, source=args.source_name or Path(args.tracking_json).name)
+    print(json.dumps({"carrierSwitchRowsUpserted": count, "stats": {**db_stats(args.db), **carrier_switch_stats(args.db)}}, ensure_ascii=False))
+
+
+def cmd_analyze_carrier_switch_db(args: argparse.Namespace) -> None:
+    params = {
+        "cj_start": args.cj_start,
+        "cj_end": args.cj_end,
+        "kp_start": args.kp_start,
+        "kp_end": args.kp_end,
+        "min_cj": args.min_cj,
+        "min_kp": args.min_kp,
+        "threshold_hours": args.threshold_hours,
+    }
+    result = analyze_carrier_switch(args.db, **params)
+    if args.save_run:
+        result["carrierSwitchAnalysisRunId"] = save_carrier_switch_analysis_run(args.db, args.name, params, result)
+    Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(args.out)
+
+
 def cmd_analyze(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     shipments = load_erp_json(args.erp_json)
@@ -209,6 +266,10 @@ def main() -> None:
         cmd_enrich_zipcodes(args)
     elif args.command == "analyze-db":
         cmd_analyze_db(args)
+    elif args.command == "ingest-carrier-switch":
+        cmd_ingest_carrier_switch(args)
+    elif args.command == "analyze-carrier-switch-db":
+        cmd_analyze_carrier_switch_db(args)
     elif args.command == "analyze":
         cmd_analyze(args)
 
