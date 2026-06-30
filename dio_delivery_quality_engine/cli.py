@@ -8,7 +8,18 @@ from .analyzer import analyze_records
 from .config import load_config, write_default_config
 from .erp_source import write_erp_json
 from .io import fixture_tracking_response, load_erp_json, load_tracking_cache, append_cache_record, record_from_tracking_response
-from .store import db_stats, init_db, records_for_period, save_analysis_run, upsert_shipments, upsert_tracking_records
+from .remote_area import lookup_juso_zip
+from .store import (
+    apply_zipcode_to_address,
+    cache_address_zip,
+    db_stats,
+    init_db,
+    records_for_period,
+    save_analysis_run,
+    seed_remote_area_ranges,
+    upsert_shipments,
+    upsert_tracking_records,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
     stats = sub.add_parser("db-stats", help="SQLite DB 누적 건수 확인")
     stats.add_argument("--db", required=True)
 
+    seed_remote = sub.add_parser("seed-remote-areas", help="택배사 도서산간/제주 우편번호 마스터를 DB에 적재")
+    seed_remote.add_argument("--db", required=True)
+    seed_remote.add_argument("--csv", required=True)
+
+    enrich_zip = sub.add_parser("enrich-zipcodes", help="배송지 주소를 우편번호로 변환해 shipments/address_zip_cache에 저장")
+    enrich_zip.add_argument("--db", required=True)
+    enrich_zip.add_argument("--limit", type=int, default=0, help="0이면 전체")
+    enrich_zip.add_argument("--dry-run", action="store_true")
+
     analyze = sub.add_parser("analyze", help="캐시/ERP 기반 배송품질 분석")
     analyze.add_argument("--erp-json", required=True)
     analyze.add_argument("--cache", required=True)
@@ -50,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_db.add_argument("--config")
     analyze_db.add_argument("--name")
     analyze_db.add_argument("--save-run", action="store_true")
+    analyze_db.add_argument("--no-keyword-fallback", action="store_true", help="우편번호 마스터만으로 도서산간을 판정하고 주소 키워드 fallback은 끔")
     return parser
 
 
@@ -84,9 +105,50 @@ def cmd_db_stats(args: argparse.Namespace) -> None:
     print(json.dumps(db_stats(args.db), ensure_ascii=False))
 
 
+def cmd_seed_remote_areas(args: argparse.Namespace) -> None:
+    init_db(args.db)
+    count = seed_remote_area_ranges(args.db, args.csv)
+    print(json.dumps({"remoteAreaZipRangesUpserted": count, "stats": db_stats(args.db)}, ensure_ascii=False))
+
+
+def cmd_enrich_zipcodes(args: argparse.Namespace) -> None:
+    import sqlite3
+
+    init_db(args.db)
+    with sqlite3.connect(args.db) as con:
+        con.row_factory = sqlite3.Row
+        sql = """
+            SELECT DISTINCT address
+            FROM shipments
+            WHERE COALESCE(address, '') <> ''
+              AND COALESCE(zipcode, '') = ''
+            ORDER BY address
+        """
+        if args.limit:
+            sql += f" LIMIT {int(args.limit)}"
+        addresses = [row["address"] for row in con.execute(sql).fetchall()]
+    counts: dict[str, int] = {}
+    examples: list[dict[str, str | int]] = []
+    for address in addresses:
+        result = lookup_juso_zip(address)
+        counts[result.confidence] = counts.get(result.confidence, 0) + 1
+        if len(examples) < 10:
+            examples.append({
+                "address": address,
+                "zipcode": result.zipcode,
+                "confidence": result.confidence,
+                "matched": result.matched_address,
+            })
+        if not args.dry_run:
+            cache_address_zip(args.db, result.normalized_address, result.zipcode, result.matched_address, result.confidence, result.source)
+            if result.zipcode:
+                apply_zipcode_to_address(args.db, address, result.zipcode, result.source, result.confidence)
+    print(json.dumps({"addressesChecked": len(addresses), "counts": counts, "examples": examples, "stats": db_stats(args.db)}, ensure_ascii=False, indent=2))
+
+
 def cmd_analyze_db(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    records = records_for_period(args.db, args.start, args.end)
+    records = records_for_period(args.db, args.start, args.end, keyword_fallback=not args.no_keyword_fallback)
     result = analyze_records(records, config)
     Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.save_run:
@@ -141,6 +203,10 @@ def main() -> None:
         cmd_ingest(args)
     elif args.command == "db-stats":
         cmd_db_stats(args)
+    elif args.command == "seed-remote-areas":
+        cmd_seed_remote_areas(args)
+    elif args.command == "enrich-zipcodes":
+        cmd_enrich_zipcodes(args)
     elif args.command == "analyze-db":
         cmd_analyze_db(args)
     elif args.command == "analyze":

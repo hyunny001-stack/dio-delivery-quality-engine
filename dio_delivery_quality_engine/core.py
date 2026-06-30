@@ -33,6 +33,9 @@ class Shipment:
     address: str = ""
     rep_name: str = ""
     dept_name: str = ""
+    zipcode: str = ""
+    zipcode_source: str = ""
+    zipcode_confidence: str = ""
 
 @dataclass(frozen=True)
 class TrackingRecord:
@@ -138,6 +141,7 @@ def shipment_from_erp_row(row: dict[str, Any]) -> Shipment | None:
         address=str(row.get("n_addr") or "").strip(),
         rep_name=str(row.get("rep_nm") or "").strip(),
         dept_name=str(row.get("dept_nm") or "").strip(),
+        zipcode=str(row.get("zipcode") or row.get("zip_no") or row.get("post_no") or "").strip(),
     )
 
 
