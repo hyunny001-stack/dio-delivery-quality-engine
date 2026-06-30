@@ -36,7 +36,7 @@ def compact_keyword(address: str) -> str:
 def lookup_juso_zip(address: str, confm_key: str | None = None, timeout: int = 10) -> AddressZipResult:
     key = confm_key or os.environ.get("JUSO_CONFM_KEY") or os.environ.get("JUSO_API_KEY")
     normalized = normalize_address(address)
-    if not normalized:
+    if not normalized or normalized.upper() in {"NA", "N/A", "NONE", "NULL"}:
         return AddressZipResult(normalized, "", "", "failed-empty-address", "juso")
     if not key:
         return AddressZipResult(normalized, "", "", "failed-missing-key", "juso")
