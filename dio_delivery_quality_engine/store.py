@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from .core import Shipment, TrackingRecord
+from .core import Shipment, TrackingRecord, is_island_mountain
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -151,7 +151,7 @@ def records_for_period(db_path: str, start: str, end: str) -> list[TrackingRecor
             delivered_at=row["delivered_at"] or "",
             delivered_date=row["delivered_date"] or "",
             delivered_hhmm=row["delivered_hhmm"] or "",
-            island_mountain=bool(row["island_mountain"]),
+            island_mountain=bool(row["island_mountain"]) or is_island_mountain(row["address"] or ""),
         ))
     return records
 
